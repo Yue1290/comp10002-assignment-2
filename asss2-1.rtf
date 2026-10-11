@@ -1,0 +1,334 @@
+{\rtf1\ansi\ansicpg936\cocoartf2867
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 /*\
+  3x3 maze path-finding game, built on the COMP10002 Assignment 2 skeleton.\
+\
+  - Grid is allocated dynamically (malloc), size set by ROWS x COLS.\
+  - Start cell is [0,0], goal cell is [ROWS-1,COLS-1].\
+  - Blocks are generated randomly (never on start/goal). Later, replace\
+    generate_blocks() with read_blocks() that reads "[r,c]" lines until '$'.\
+  - The route is found with the queue/counter method from the spec\
+    (neighbour order: above, below, left, right) and stored in a linked list.\
+\
+  Usage: ./maze [seed]\
+*/\
+#include <stdio.h>\
+#include <stdlib.h>\
+#include <assert.h>\
+#include <time.h>\
+\
+#define ROWS 3\
+#define COLS 3\
+#define BLOCK_PERCENT 30        // chance (%) that a free cell becomes a block\
+\
+#define SEP1 "==STAGE %d=======================================\\n"\
+#define SEP2 "------------------------------------------------\\n"\
+\
+#define CELL_CODE_INITIAL       73 // 'I'\
+#define CELL_CODE_GOAL          71 // 'G'\
+#define CELL_CODE_BLOCK         35 // '#'\
+#define CELL_CODE_EMPTY         32 // ' '\
+#define CELL_CODE_VISITED       42 // '*'\
+\
+#define MAX_CELLS_PER_LINE      5\
+\
+/* type definitions ----------------------------------------------------------*/\
+typedef struct \{\
+    short row;\
+    short col;\
+    unsigned int counter;\
+\} cell_t;\
+\
+typedef struct state state_t;\
+struct state \{\
+    cell_t *cell;\
+    state_t *next;\
+\};\
+\
+typedef struct \{\
+    state_t *head;\
+    state_t *tail;\
+\} route_t;\
+\
+/* function prototypes -------------------------------------------------------*/\
+route_t* make_empty_route(void);\
+void free_state(state_t*);\
+void free_route(route_t* R);\
+route_t* insert_at_head(route_t*, cell_t*);\
+route_t* insert_at_tail(route_t*, cell_t*);\
+\
+char *make_grid(int rows, int cols);\
+void generate_blocks(char *blocks, int rows, int cols,\
+                     int ir, int ic, int gr, int gc);\
+route_t *find_route(char *blocks, int rows, int cols,\
+                    int ir, int ic, int gr, int gc);\
+void print_grid(char *blocks, int rows, int cols, route_t *R,\
+                int ir, int ic, int gr, int gc);\
+void print_route(route_t *R);\
+cell_t *new_cell(int r, int c);\
+\
+/* where it all happens ------------------------------------------------------*/\
+int\
+main(int argc, char *argv[]) \{\
+    int ir = 0, ic = 0;                 // initial cell\
+    int gr = ROWS-1, gc = COLS-1;       // goal cell\
+    int nblocks = 0, i;\
+    unsigned int seed = (argc > 1) ? (unsigned int)atoi(argv[1])\
+                                   : (unsigned int)time(NULL);\
+    char *blocks;\
+    route_t *R;\
+\
+    srand(seed);\
+    blocks = make_grid(ROWS, COLS);\
+    generate_blocks(blocks, ROWS, COLS, ir, ic, gr, gc);\
+    for (i = 0; i < ROWS*COLS; i++) \{\
+        nblocks += blocks[i];\
+    \}\
+\
+    printf(SEP1, 0);\
+    printf("The grid has %d rows and %d columns.\\n", ROWS, COLS);\
+    printf("The grid has %d block(s).\\n", nblocks);\
+    printf("The initial cell in the grid is [%d,%d].\\n", ir, ic);\
+    printf("The goal cell in the grid is [%d,%d].\\n", gr, gc);\
+\
+    printf(SEP1, 1);\
+    R = find_route(blocks, ROWS, COLS, ir, ic, gr, gc);\
+    if (R) \{\
+        print_grid(blocks, ROWS, COLS, R, ir, ic, gr, gc);\
+        printf(SEP2);\
+        print_route(R);\
+        printf("The route is valid!\\n");\
+        free_route(R);\
+    \} else \{\
+        print_grid(blocks, ROWS, COLS, NULL, ir, ic, gr, gc);\
+        printf(SEP2);\
+        printf("The route cannot be found!\\n");\
+    \}\
+\
+    free(blocks);\
+    return EXIT_SUCCESS;\
+\}\
+\
+/* helpers -------------------------------------------------------------------*/\
+\
+// blocks[r*cols+c] == 1 means the cell is blocked\
+char\
+*make_grid(int rows, int cols) \{\
+    char *g = (char*)calloc((size_t)rows*cols, sizeof(char));\
+    assert(g != NULL);\
+    return g;\
+\}\
+\
+// random blocks, never on the initial or goal cell\
+// (replace this function with an input reader later)\
+void\
+generate_blocks(char *blocks, int rows, int cols,\
+                int ir, int ic, int gr, int gc) \{\
+    int r, c;\
+    for (r = 0; r < rows; r++) \{\
+        for (c = 0; c < cols; c++) \{\
+            if ((r == ir && c == ic) || (r == gr && c == gc)) \{\
+                continue;\
+            \}\
+            if (rand() % 100 < BLOCK_PERCENT) \{\
+                blocks[r*cols+c] = 1;\
+            \}\
+        \}\
+    \}\
+\}\
+\
+cell_t\
+*new_cell(int r, int c) \{\
+    cell_t *cell = (cell_t*)malloc(sizeof(*cell));\
+    assert(cell != NULL);\
+    cell->row = (short)r;\
+    cell->col = (short)c;\
+    cell->counter = 0;\
+    return cell;\
+\}\
+\
+// BFS with counters (above, below, left, right), then walk back from the\
+// goal to the start choosing the neighbour with the smallest counter.\
+// Returns NULL when the goal is unreachable.\
+route_t\
+*find_route(char *blocks, int rows, int cols,\
+            int ir, int ic, int gr, int gc) \{\
+    static const int dr[4] = \{-1, 1, 0, 0\};\
+    static const int dc[4] = \{0, 0, -1, 1\};\
+    int n = rows*cols, head = 0, tail = 0, d, found = 0;\
+    int *queue = (int*)malloc(n*sizeof(int));\
+    int *counter = (int*)malloc(n*sizeof(int));\
+    int i, r, c, cur;\
+    route_t *R;\
+    assert(queue != NULL && counter != NULL);\
+    for (i = 0; i < n; i++) \{\
+        counter[i] = -1;\
+    \}\
+\
+    counter[ir*cols+ic] = 0;\
+    queue[tail++] = ir*cols+ic;\
+    while (head < tail && !found) \{\
+        cur = queue[head++];\
+        r = cur / cols;\
+        c = cur % cols;\
+        for (d = 0; d < 4 && !found; d++) \{\
+            int nr = r+dr[d], nc = c+dc[d];\
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;\
+            if (blocks[nr*cols+nc] || counter[nr*cols+nc] != -1) continue;\
+            counter[nr*cols+nc] = counter[cur]+1;\
+            queue[tail++] = nr*cols+nc;\
+            if (nr == gr && nc == gc) found = 1;\
+        \}\
+    \}\
+\
+    if (!found) \{\
+        free(queue);\
+        free(counter);\
+        return NULL;\
+    \}\
+\
+    // walk backward from goal to start\
+    R = make_empty_route();\
+    r = gr;\
+    c = gc;\
+    insert_at_head(R, new_cell(r, c));\
+    while (!(r == ir && c == ic)) \{\
+        int best = -1, br = r, bc = c;\
+        for (d = 0; d < 4; d++) \{\
+            int nr = r+dr[d], nc = c+dc[d];\
+            if (nr < 0 || nr >= rows || nc < 0 || nc >= cols) continue;\
+            if (counter[nr*cols+nc] == -1) continue;\
+            if (best == -1 || counter[nr*cols+nc] < best) \{\
+                best = counter[nr*cols+nc];\
+                br = nr;\
+                bc = nc;\
+            \}\
+        \}\
+        r = br;\
+        c = bc;\
+        insert_at_head(R, new_cell(r, c));\
+    \}\
+\
+    free(queue);\
+    free(counter);\
+    return R;\
+\}\
+\
+// ASCII visualisation as in Figure 2 of the spec\
+void\
+print_grid(char *blocks, int rows, int cols, route_t *R,\
+           int ir, int ic, int gr, int gc) \{\
+    int r, c;\
+    char *vis = (char*)calloc((size_t)rows*cols, sizeof(char));\
+    state_t *s;\
+    assert(vis != NULL);\
+    for (s = R ? R->head : NULL; s; s = s->next) \{\
+        vis[s->cell->row*cols + s->cell->col] = 1;\
+    \}\
+\
+    printf(" ");\
+    for (c = 0; c < cols; c++) \{\
+        printf("%d", c % 10);\
+    \}\
+    printf("\\n");\
+    for (r = 0; r < rows; r++) \{\
+        printf("%d", r % 10);\
+        for (c = 0; c < cols; c++) \{\
+            char ch = CELL_CODE_EMPTY;\
+            if (r == ir && c == ic)          ch = CELL_CODE_INITIAL;\
+            else if (r == gr && c == gc)     ch = CELL_CODE_GOAL;\
+            else if (blocks[r*cols+c])       ch = CELL_CODE_BLOCK;\
+            else if (vis[r*cols+c])          ch = CELL_CODE_VISITED;\
+            printf("%c", ch);\
+        \}\
+        printf("\\n");\
+    \}\
+    free(vis);\
+\}\
+\
+// at most five cells per line, no blanks\
+void\
+print_route(route_t *R) \{\
+    state_t *s;\
+    int count = 0;\
+    for (s = R->head; s; s = s->next) \{\
+        printf("[%d,%d]", s->cell->row, s->cell->col);\
+        count++;\
+        if (s->next) \{\
+            printf("->");\
+            if (count % MAX_CELLS_PER_LINE == 0) \{\
+                printf("\\n");\
+            \}\
+        \} else \{\
+            printf(".\\n");\
+        \}\
+    \}\
+\}\
+\
+/* linked list functions from the skeleton -----------------------------------*/\
+void\
+free_state(state_t* state) \{\
+    if (state) \{\
+        free(state->cell);\
+        free(state);\
+    \}\
+\}\
+\
+route_t\
+*make_empty_route(void) \{\
+    route_t *R;\
+    R = (route_t*)malloc(sizeof(*R));\
+    assert(R!=NULL);\
+    R->head = R->tail = NULL;\
+    return R;\
+\}\
+\
+void\
+free_route(route_t* R) \{\
+    state_t *curr, *prev;\
+    assert(R!=NULL);\
+    curr = R->head;\
+    while (curr) \{\
+        prev = curr;\
+        curr = curr->next;\
+        free_state(prev);\
+    \}\
+    free(R);\
+\}\
+\
+route_t\
+*insert_at_head(route_t* R, cell_t* addr) \{\
+    assert(R!=NULL);\
+    state_t *new;\
+    new = (state_t*)malloc(sizeof(*new));\
+    assert(new!=NULL);\
+    new->cell = addr;\
+    new->next = R->head;\
+    R->head = new;\
+    if (R->tail==NULL) \{\
+        R->tail = new;\
+    \}\
+    return R;\
+\}\
+\
+route_t\
+*insert_at_tail(route_t* R, cell_t* addr) \{\
+    assert(R!=NULL);\
+    state_t *new;\
+    new = (state_t*)malloc(sizeof(*new));\
+    assert(new!=NULL);\
+    new->cell = addr;\
+    new->next = NULL;\
+    if (R->tail==NULL) \{\
+        R->head = R->tail = new;\
+    \} else \{\
+        R->tail->next = new;\
+        R->tail = new;\
+    \}\
+    return R;\
+\}}
